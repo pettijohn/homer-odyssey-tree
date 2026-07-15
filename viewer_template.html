@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Odyssey — Hierarchical Summary</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Georgia, serif; line-height: 1.55; }
+    body { max-width: 70rem; margin: 2rem auto; padding: 0 1rem 4rem; }
+    h1 { margin-bottom: .25rem; }
+    .intro { margin-top: 0; color: #777; }
+    .book { border-top: 1px solid #9996; padding: .8rem 0; }
+    .book-summary, .paragraph-summary { cursor: pointer; margin: .25rem 0; }
+    .book-summary { font-size: 1.05rem; }
+    .book-summary::before, .paragraph-summary::before { content: "▸"; display: inline-block; width: 1.2rem; }
+    [aria-expanded="true"]::before { content: "▾"; }
+    .book-children { margin: .7rem 0 0 1.2rem; padding-left: 1rem; border-left: 2px solid #9996; }
+    .paragraph { margin: .55rem 0; }
+    .source { margin: .45rem 0 .8rem 1.2rem; padding: .65rem .85rem; background: #8881; white-space: pre-wrap; }
+    [hidden] { display: none !important; }
+    [role="button"]:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <h1>The Odyssey</h1>
+  <p class="intro">Select a book summary to reveal its paragraph summaries. Select a sentence to reveal the source paragraph.</p>
+  <main id="tree" role="tree" aria-label="The Odyssey hierarchical summary"></main>
+  <script>
+    const ODYSSEY_DATA = __ODYSSEY_DATA__;
+
+    function toggle(control) {
+      const target = document.getElementById(control.getAttribute("aria-controls"));
+      const expanded = control.getAttribute("aria-expanded") === "true";
+      control.setAttribute("aria-expanded", String(!expanded));
+      target.hidden = expanded;
+    }
+
+    function expandable(text, targetId, className) {
+      const control = document.createElement("p");
+      control.className = className;
+      control.setAttribute("role", "button");
+      control.setAttribute("tabindex", "0");
+      control.setAttribute("aria-expanded", "false");
+      control.setAttribute("aria-controls", targetId);
+      control.textContent = text;
+      control.addEventListener("click", () => toggle(control));
+      control.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggle(control);
+        }
+      });
+      return control;
+    }
+
+    const tree = document.getElementById("tree");
+    for (const book of ODYSSEY_DATA.books) {
+      const bookNode = document.createElement("section");
+      bookNode.className = "book";
+      bookNode.setAttribute("role", "treeitem");
+      const childrenId = `book-${book.number}-children`;
+      bookNode.append(expandable(`${book.title}. ${book.summary}`, childrenId, "book-summary"));
+
+      const children = document.createElement("div");
+      children.id = childrenId;
+      children.className = "book-children";
+      children.setAttribute("role", "group");
+      children.hidden = true;
+
+      for (const paragraph of book.paragraphs) {
+        const paragraphNode = document.createElement("div");
+        paragraphNode.className = "paragraph";
+        paragraphNode.setAttribute("role", "treeitem");
+        const sourceId = `book-${book.number}-source-${paragraph.number}`;
+        paragraphNode.append(expandable(paragraph.summary, sourceId, "paragraph-summary"));
+
+        const source = document.createElement("p");
+        source.id = sourceId;
+        source.className = "source";
+        source.textContent = paragraph.source;
+        source.hidden = true;
+        paragraphNode.append(source);
+        children.append(paragraphNode);
+      }
+      bookNode.append(children);
+      tree.append(bookNode);
+    }
+  </script>
+</body>
+</html>
+

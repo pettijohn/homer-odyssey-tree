@@ -1,5 +1,7 @@
 # The Odyssey tree viewer
 
+View it live here: https://pettijohn.github.io/homer-odyssey-tree/
+
 This project downloads Project Gutenberg's public-domain HTML edition of *The
 Odyssey*, extracts Books I–XXIV, summarizes each source paragraph into one
 sentence and each book into one paragraph with the required local model, and

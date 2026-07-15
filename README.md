@@ -5,7 +5,7 @@ Odyssey*, extracts Books I–XXIV, summarizes each source paragraph into one
 sentence and each book into one paragraph with the required local model, and
 builds a standalone tree-view document.
 
-The finished viewer is `odyssey.html`. It has no runtime dependencies and can
+The finished viewer is `index.html`. It has no runtime dependencies and can
 be opened directly in a browser. Select a book paragraph to see its sentence
 summaries, then select a sentence to see the original paragraph.
 
@@ -32,4 +32,4 @@ Artifacts:
 - `data/parsed.json`: Books I–XXIV before summarization
 - `data/summary-cache.json`: resumable content-addressed model cache
 - `data/odyssey.json`: complete hierarchical data
-- `odyssey.html`: standalone interactive viewer with embedded data
+- `index.html`: standalone interactive viewer with embedded data

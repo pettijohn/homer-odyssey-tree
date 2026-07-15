@@ -17,6 +17,7 @@
     .book-children { margin: .7rem 0 0 1.2rem; padding-left: 1rem; border-left: 2px solid #9996; }
     .paragraph { margin: .55rem 0; }
     .source { margin: .45rem 0 .8rem 1.2rem; padding: .65rem .85rem; background: #8881; white-space: pre-wrap; }
+    .footnote { font-size: .75em; line-height: 0; vertical-align: super; }
     [hidden] { display: none !important; }
     [role="button"]:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
   </style>
@@ -53,6 +54,24 @@
       return control;
     }
 
+    function appendSourceWithFootnotes(element, text) {
+      const footnotePattern = /\[(\d+)\]/g;
+      let cursor = 0;
+      for (const match of text.matchAll(footnotePattern)) {
+        element.append(document.createTextNode(text.slice(cursor, match.index)));
+        const footnote = document.createElement("sup");
+        footnote.className = "footnote";
+        const link = document.createElement("a");
+        link.href = `${ODYSSEY_DATA.source_url}#linknote-${match[1]}`;
+        link.textContent = match[0];
+        link.setAttribute("aria-label", `Footnote ${match[1]} on Project Gutenberg`);
+        footnote.append(link);
+        element.append(footnote);
+        cursor = match.index + match[0].length;
+      }
+      element.append(document.createTextNode(text.slice(cursor)));
+    }
+
     const tree = document.getElementById("tree");
     for (const book of ODYSSEY_DATA.books) {
       const bookNode = document.createElement("section");
@@ -77,7 +96,7 @@
         const source = document.createElement("p");
         source.id = sourceId;
         source.className = "source";
-        source.textContent = paragraph.source;
+        appendSourceWithFootnotes(source, paragraph.source);
         source.hidden = true;
         paragraphNode.append(source);
         children.append(paragraphNode);
@@ -88,4 +107,3 @@
   </script>
 </body>
 </html>
-

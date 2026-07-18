@@ -27,7 +27,17 @@
   <p class="intro">Select a book summary to reveal its paragraph summaries. Select a sentence to reveal the source paragraph.</p>
   <main id="tree" role="tree" aria-label="The Odyssey hierarchical summary"></main>
   <script>
+    // Hard-coded edition configuration. Change this key when rebuilding for another edition.
+    const SOURCE_EDITIONS = Object.freeze({
+      pg1727: "https://www.gutenberg.org/cache/epub/1727/pg1727-images.html",
+      pg1728: "https://www.gutenberg.org/cache/epub/1728/pg1728-images.html"
+    });
+    const SOURCE_EDITION = "pg1728";
     const ODYSSEY_DATA = __ODYSSEY_DATA__;
+
+    if (ODYSSEY_DATA.source_edition !== SOURCE_EDITION) {
+      throw new Error(`Embedded data is for ${ODYSSEY_DATA.source_edition}, not ${SOURCE_EDITION}`);
+    }
 
     function toggle(control) {
       const target = document.getElementById(control.getAttribute("aria-controls"));
@@ -62,7 +72,7 @@
         const footnote = document.createElement("sup");
         footnote.className = "footnote";
         const link = document.createElement("a");
-        link.href = `${ODYSSEY_DATA.source_url}#linknote-${match[1]}`;
+        link.href = `${SOURCE_EDITIONS[SOURCE_EDITION]}#linknote-${match[1]}`;
         link.textContent = match[0];
         link.setAttribute("aria-label", `Footnote ${match[1]} on Project Gutenberg`);
         footnote.append(link);

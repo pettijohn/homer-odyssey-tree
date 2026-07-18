@@ -2,14 +2,16 @@
 
 View it live here: https://pettijohn.github.io/homer-odyssey-tree/
 
-This project downloads Project Gutenberg's public-domain HTML edition of *The
-Odyssey*, extracts Books I–XXIV, summarizes each source paragraph into one
+This project downloads Project Gutenberg's public-domain `pg1728` HTML edition
+of *The Odyssey*, extracts Books I–XXIV, summarizes each source paragraph into one
 sentence and each book into one paragraph with the required local model, and
 builds a standalone tree-view document.
 
 The finished viewer is `index.html`. It has no runtime dependencies and can
 be opened directly in a browser. Select a book paragraph to see its sentence
 summaries, then select a sentence to see the original paragraph.
+The hard-coded `SOURCE_EDITION` setting near the top of its script defaults to
+`pg1728`; its matching URL is used for all linked footnote references.
 
 ## Rebuild
 
@@ -30,7 +32,7 @@ strictly serial run. Other repeatable stages are `download`, `parse`,
 
 Artifacts:
 
-- `source/pg1727-images.html`: untouched Gutenberg source download
+- `source/pg1728-images.html`: untouched active Gutenberg source download
 - `data/parsed.json`: Books I–XXIV before summarization
 - `data/summary-cache.json`: resumable content-addressed model cache
 - `data/odyssey.json`: complete hierarchical data

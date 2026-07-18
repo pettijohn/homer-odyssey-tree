@@ -22,8 +22,9 @@ from bs4 import BeautifulSoup, Tag
 
 
 ROOT: Final[Path] = Path(__file__).resolve().parent
-SOURCE_URL: Final[str] = "https://www.gutenberg.org/cache/epub/1727/pg1727-images.html"
-SOURCE_PATH: Final[Path] = ROOT / "source" / "pg1727-images.html"
+SOURCE_EDITION: Final[str] = "pg1728"
+SOURCE_URL: Final[str] = "https://www.gutenberg.org/cache/epub/1728/pg1728-images.html"
+SOURCE_PATH: Final[Path] = ROOT / "source" / "pg1728-images.html"
 PARSED_PATH: Final[Path] = ROOT / "data" / "parsed.json"
 CACHE_PATH: Final[Path] = ROOT / "data" / "summary-cache.json"
 SUMMARY_PATH: Final[Path] = ROOT / "data" / "odyssey.json"
@@ -36,7 +37,7 @@ ABBREVIATION: Final[re.Pattern[str]] = re.compile(
     r"\b(?:Mr|Mrs|Ms|Dr|Mt|St|Jr|Sr|vs|etc)\.", re.IGNORECASE
 )
 LEADING_INTERJECTION: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<quote>[“\"]?)(?:Alas|Ah|Oh)!\s+", re.IGNORECASE
+    r"^(?P<quote>[“\"]?)(?:Alas|Ah|Lo|Oh)!\s+", re.IGNORECASE
 )
 SummaryKind: TypeAlias = Literal["sentence", "paragraph"]
 
@@ -149,12 +150,17 @@ def parse_source(path: Path) -> list[SourceBook]:
             if isinstance(sibling, Tag) and sibling.name == "h2":
                 break
             if isinstance(sibling, Tag) and sibling.name == "p":
+                classes: object = sibling.get("class", [])
+                if isinstance(classes, list) and "footnote" in classes:
+                    continue
+                if sibling.find(id=re.compile(r"^linknote-\d+$")) is not None:
+                    continue
                 text: str = clean_text(sibling)
                 if text:
                     paragraphs.append(SourceParagraph(number=len(paragraphs) + 1, source=text))
         if not paragraphs:
             raise RuntimeError(f"Book {book_number} contained no paragraphs")
-        books.append(SourceBook(book_number, clean_text(heading), paragraphs))
+        books.append(SourceBook(book_number, clean_text(heading).rstrip("."), paragraphs))
     if len(books) != 24:
         raise RuntimeError(f"Expected 24 books, found {len(books)}")
     return books
@@ -170,7 +176,7 @@ def prompt_for(text: str, kind: SummaryKind) -> str:
 
 def cache_key(text: str, kind: SummaryKind) -> str:
     """Key summaries by all inputs that affect model output."""
-    material: str = f"{MODEL}\0{kind}\0{text}"
+    material: str = f"{SOURCE_EDITION}\0{MODEL}\0{kind}\0{text}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -198,7 +204,7 @@ def has_requested_shape(summary: str, kind: SummaryKind) -> bool:
     return SENTENCE_BOUNDARY.search(without_abbreviations) is None
 
 
-def invoke_model(text: str, kind: SummaryKind, retries: int = 3) -> str:
+def invoke_model(text: str, kind: SummaryKind, retries: int = 6) -> str:
     """Invoke the mandated bun/pi model command and return its plain output."""
     last_error: str = "unknown failure"
     candidate_text: str = text
@@ -228,9 +234,17 @@ def invoke_model(text: str, kind: SummaryKind, retries: int = 3) -> str:
         if process.returncode == 0 and summary:
             # Keep correction model-driven: summarize the nonconforming model output
             # with the same mandated prompt on the next attempt.
-            candidate_text = summary
+            correction: str = (
+                "A draft summary follows. Rewrite it as exactly one grammatical sentence, "
+                "using indirect speech instead of sentence-ending punctuation inside quoted "
+                "dialogue when necessary.\n\n"
+                if kind == "sentence"
+                else "A draft summary follows. Rewrite it as exactly one prose paragraph.\n\n"
+            )
+            candidate_text = correction + summary
         last_error = process.stderr.strip() or (
-            f"output did not have the requested {kind} shape (exit {process.returncode})"
+            f"output did not have the requested {kind} shape "
+            f"(exit {process.returncode}): {summary[:500]!r}"
         )
         print(f"Model attempt {attempt}/{retries} failed: {last_error}", file=sys.stderr)
     raise RuntimeError(f"Model summarization failed after {retries} attempts: {last_error}")
@@ -325,6 +339,8 @@ def load_summary_data() -> dict[str, Any]:
 
 def verify_artifacts(source_books: list[SourceBook], data: dict[str, Any]) -> None:
     """Verify hierarchy, source fidelity, summary shape, and standalone output."""
+    if data.get("source_edition") != SOURCE_EDITION or data.get("source_url") != SOURCE_URL:
+        raise RuntimeError("Summary data does not match the configured source edition")
     raw_books: object = data.get("books")
     if not isinstance(raw_books, list) or len(raw_books) != 24:
         raise RuntimeError("Summary data must contain exactly 24 books")
@@ -351,14 +367,22 @@ def verify_artifacts(source_books: list[SourceBook], data: dict[str, Any]) -> No
                     f"Invalid sentence summary in {source_book.title}, paragraph {source_paragraph.number}"
                 )
             summary_count += 1
-    if summary_count != 1051:
-        raise RuntimeError(f"Expected 1051 paragraph nodes, found {summary_count}")
+    expected_count: int = sum(len(book.paragraphs) for book in source_books)
+    if summary_count != expected_count:
+        raise RuntimeError(f"Expected {expected_count} paragraph nodes, found {summary_count}")
     html: str = OUTPUT_PATH.read_text(encoding="utf-8")
     if "__ODYSSEY_DATA__" in html or html.count("const ODYSSEY_DATA = ") != 1:
         raise RuntimeError("Standalone HTML does not contain exactly one embedded data set")
+    if f'const SOURCE_EDITION = "{SOURCE_EDITION}";' not in html or SOURCE_URL not in html:
+        raise RuntimeError("Standalone HTML does not contain the configured source edition")
+    if "#linknote-${match[1]}" not in html or 'className = "footnote"' not in html:
+        raise RuntimeError("Standalone HTML does not contain the Gutenberg footnote renderer")
     if "<script src=" in html or "<link rel=\"stylesheet\"" in html:
         raise RuntimeError("Standalone HTML unexpectedly depends on an external script or stylesheet")
-    print("Verified 24 books, 1051 sentence/source nodes, summary shapes, and standalone HTML.")
+    print(
+        f"Verified 24 books, {expected_count} sentence/source nodes, "
+        "summary shapes, and standalone HTML."
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -388,6 +412,7 @@ def main() -> None:
     source_path: Path = download_source(args.force_download)
     books: list[SourceBook] = parse_source(source_path)
     parsed_data: dict[str, Any] = {
+        "source_edition": SOURCE_EDITION,
         "source_url": SOURCE_URL,
         "books": [asdict(book) for book in books],
     }
@@ -411,6 +436,7 @@ def main() -> None:
     summarized: list[SummarizedBook] = summarize_books(books, args.workers)
     final_data: dict[str, Any] = {
         "title": "The Odyssey",
+        "source_edition": SOURCE_EDITION,
         "source_url": SOURCE_URL,
         "model": MODEL,
         "books": [asdict(book) for book in summarized],

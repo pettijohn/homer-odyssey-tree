@@ -3,7 +3,7 @@ This folder is empty. Your task is to create a Python program that produces a hi
 - Use only python3 & bash. 
 - When using python, you MUST use a venv and use it exclusively it to install dependencies. You MUST use type hints in all Python code. 
 - You MUST NOT install any system dependencies.
-- Use Project Gutenberg's public domain copy of the work: https://www.gutenberg.org/ebooks/1727 or HTML directly https://www.gutenberg.org/cache/epub/1727/pg1727-images.html#chap01 Leave a copy of the original file(s) here in the repo. 
+- Use Project Gutenberg's public domain copy of the work: https://www.gutenberg.org/cache/epub/1728/pg1728-images.html Leave a copy of the original file(s) here in the repo. 
 - Create a single HTML file with a minimal tree control using only vanilla JS, barebones CSS, and HTML. We're not trying to design anything beautiful, but rather summarize text. 
 - Summarize each book into one paragraph. 
 - When clicking on the book paragraph, expand to a summary view where each paragraph from the source is summarized to one sentence.

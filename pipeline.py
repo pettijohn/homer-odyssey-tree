@@ -31,6 +31,9 @@ SUMMARY_PATH: Final[Path] = ROOT / "data" / "odyssey.json"
 TEMPLATE_PATH: Final[Path] = ROOT / "viewer_template.html"
 OUTPUT_PATH: Final[Path] = ROOT / "index.html"
 MODEL: Final[str] = "gemma-4-26B-A4B"
+OUTLINE_MIN_PARAGRAPHS: Final[int] = 5
+OUTLINE_MAX_PARAGRAPHS: Final[int] = 10
+OUTLINE_PROMPT_VERSION: Final[str] = "range-outline-v7-firm-target-thinking"
 SENTENCE_BOUNDARY: Final[re.Pattern[str]] = re.compile(
     r"[.!?][”\"]?\s+(?=[A-Z“\"])")
 ABBREVIATION: Final[re.Pattern[str]] = re.compile(
@@ -63,11 +66,27 @@ class SummarizedParagraph:
 
 
 @dataclass(frozen=True)
+class OutlineRange:
+    summary: str
+    start_paragraph: int
+    end_paragraph: int
+
+
+@dataclass(frozen=True)
+class SummarizedSection:
+    number: int
+    summary: str
+    start_paragraph: int
+    end_paragraph: int
+    paragraphs: list[SummarizedParagraph]
+
+
+@dataclass(frozen=True)
 class SummarizedBook:
     number: int
     title: str
     summary: str
-    paragraphs: list[SummarizedParagraph]
+    sections: list[SummarizedSection]
 
 
 class SummaryCache:
@@ -216,8 +235,6 @@ def invoke_model(text: str, kind: SummaryKind, retries: int = 6) -> str:
             "-p",
             "--model",
             MODEL,
-            "--thinking",
-            "off",
             prompt_for(candidate_text, kind),
         ]
         process: subprocess.CompletedProcess[str] = subprocess.run(
@@ -261,6 +278,144 @@ def summarize_cached(text: str, kind: SummaryKind, cache: SummaryCache) -> str:
     return summary
 
 
+def outline_prompt(book_title: str, paragraphs: list[SummarizedParagraph]) -> str:
+    """Request a flat, strictly verifiable hierarchy over cached paragraph summaries."""
+    inputs: list[dict[str, int | str]] = [
+        {"paragraph_number": paragraph.number, "summary_sentence": paragraph.summary}
+        for paragraph in paragraphs
+    ]
+    paragraph_count: int = len(paragraphs)
+    return f"""Organize these existing paragraph summaries from one book of The Odyssey into a hierarchical outline.
+
+Return exactly one valid JSON array and nothing else. Do not use Markdown fences, commentary, or a wrapper object.
+
+Every array item must use exactly this shape:
+{{"summary_sentence":"Exactly one grammatical sentence summarizing this group.","start_paragraph":1,"end_paragraph":5}}
+
+Rules:
+- Partition the input into contiguous ranges of {OUTLINE_MIN_PARAGRAPHS} to {OUTLINE_MAX_PARAGRAPHS} paragraphs.
+- Plan the complete partition before responding so the final range is also close to the target size.
+- The first range must start at paragraph 1.
+- Each later range must start immediately after the prior range.
+- The final range must end at paragraph {paragraph_count}.
+- Include every paragraph exactly once, in ascending order, with no gaps or overlaps.
+- Each summary_sentence must be exactly one grammatical sentence synthesizing only its range's paragraph summaries.
+- Preserve the Greek names, events, chronology, and elevated tone of the input.
+- Do not copy a paragraph summary verbatim when a synthesis is possible.
+- Do not return a book summary; the caller will join the summary_sentence values verbatim, in order, to form one prose paragraph.
+- JSON strings must escape quotation marks and control characters correctly.
+
+Book: {book_title}
+Paragraph summaries as JSON:
+{json.dumps(inputs, ensure_ascii=False)}"""
+
+
+def parse_outline(output: str, paragraph_count: int) -> list[OutlineRange]:
+    """Parse and strictly validate a model-generated range outline."""
+    try:
+        raw: object = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid JSON: {error}") from error
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("outline must be a non-empty JSON array")
+    items: list[object] = cast(list[object], raw)
+    ranges: list[OutlineRange] = []
+    expected_start: int = 1
+    expected_keys: set[str] = {"summary_sentence", "start_paragraph", "end_paragraph"}
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict) or set(item) != expected_keys:
+            raise ValueError(f"outline item {index} does not have the exact required keys")
+        record: dict[str, object] = cast(dict[str, object], item)
+        summary: object = record["summary_sentence"]
+        start: object = record["start_paragraph"]
+        end: object = record["end_paragraph"]
+        if not isinstance(summary, str) or not has_requested_shape(summary, "sentence"):
+            raise ValueError(f"outline item {index} is not exactly one sentence")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+        ):
+            raise ValueError(f"outline item {index} range values must be integers")
+        if start != expected_start:
+            raise ValueError(f"outline item {index} must start at paragraph {expected_start}")
+        size: int = end - start + 1
+        if size < 1:
+            raise ValueError(f"outline item {index} has an empty or reversed range")
+        ranges.append(OutlineRange(summary, start, end))
+        expected_start = end + 1
+    if expected_start != paragraph_count + 1:
+        raise ValueError(f"outline ends at paragraph {expected_start - 1}, not {paragraph_count}")
+    return ranges
+
+
+def outline_cache_key(book_title: str, paragraphs: list[SummarizedParagraph]) -> str:
+    """Key an outline by its prompt version and exact paragraph-summary inputs."""
+    material: str = json.dumps(
+        {
+            "source_edition": SOURCE_EDITION,
+            "model": MODEL,
+            "prompt_version": OUTLINE_PROMPT_VERSION,
+            "book_title": book_title,
+            "paragraphs": [asdict(paragraph) for paragraph in paragraphs],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def invoke_outline(
+    book_title: str, paragraphs: list[SummarizedParagraph], retries: int = 6
+) -> tuple[str, list[OutlineRange]]:
+    """Invoke Gemma for a structured outline, retrying any invalid response."""
+    base_prompt: str = outline_prompt(book_title, paragraphs)
+    feedback: str = ""
+    last_error: str = "unknown failure"
+    for attempt in range(1, retries + 1):
+        prompt: str = base_prompt + feedback
+        process: subprocess.CompletedProcess[str] = subprocess.run(
+            ["bun", "run", "pi", "-p", "--model", MODEL, prompt],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+        output: str = process.stdout.strip()
+        if process.returncode == 0:
+            try:
+                return output, parse_outline(output, len(paragraphs))
+            except ValueError as error:
+                last_error = str(error)
+        else:
+            last_error = process.stderr.strip() or f"exit {process.returncode}"
+        feedback = (
+            f"\n\nYour previous response was invalid because {last_error}. "
+            "Rebalance ranges as needed and return the complete corrected JSON array only. "
+            f"The invalid response was:\n{output}"
+        )
+        print(f"Outline attempt {attempt}/{retries} failed for {book_title}: {last_error}", file=sys.stderr)
+    raise RuntimeError(f"Outline generation failed for {book_title}: {last_error}")
+
+
+def outline_cached(
+    book_title: str, paragraphs: list[SummarizedParagraph], cache: SummaryCache
+) -> list[OutlineRange]:
+    """Reuse a validated structured outline or generate and persist one."""
+    key: str = outline_cache_key(book_title, paragraphs)
+    existing: str | None = cache.get(key)
+    if existing is not None:
+        try:
+            return parse_outline(existing, len(paragraphs))
+        except ValueError:
+            pass
+    output, ranges = invoke_outline(book_title, paragraphs)
+    cache.put(key, output)
+    return ranges
+
+
 def validate_prompt(books: list[SourceBook]) -> None:
     """Exercise the prompt on short, medium, and book-length source samples."""
     samples: list[tuple[str, SummaryKind, str]] = [
@@ -275,7 +430,7 @@ def validate_prompt(books: list[SourceBook]) -> None:
 
 
 def summarize_books(books: list[SourceBook], workers: int) -> list[SummarizedBook]:
-    """Generate cached paragraph and book summaries with bounded concurrency."""
+    """Generate cached paragraph summaries and structured book outlines."""
     cache: SummaryCache = SummaryCache(CACHE_PATH)
     tasks: list[tuple[int, int, str]] = [
         (book.number, paragraph.number, paragraph.source)
@@ -304,9 +459,6 @@ def summarize_books(books: list[SourceBook], workers: int) -> list[SummarizedBoo
 
     summarized: list[SummarizedBook] = []
     for book in books:
-        source_text: str = "\n\n".join(paragraph.source for paragraph in book.paragraphs)
-        print(f"Summarizing {book.title}...", flush=True)
-        book_summary: str = summarize_cached(source_text, "paragraph", cache)
         summarized_paragraphs: list[SummarizedParagraph] = [
             SummarizedParagraph(
                 number=paragraph.number,
@@ -315,7 +467,22 @@ def summarize_books(books: list[SourceBook], workers: int) -> list[SummarizedBoo
             )
             for paragraph in book.paragraphs
         ]
-        summarized.append(SummarizedBook(book.number, book.title, book_summary, summarized_paragraphs))
+        print(f"Outlining {book.title}...", flush=True)
+        ranges: list[OutlineRange] = outline_cached(book.title, summarized_paragraphs, cache)
+        sections: list[SummarizedSection] = [
+            SummarizedSection(
+                number=index,
+                summary=outline_range.summary,
+                start_paragraph=outline_range.start_paragraph,
+                end_paragraph=outline_range.end_paragraph,
+                paragraphs=summarized_paragraphs[
+                    outline_range.start_paragraph - 1 : outline_range.end_paragraph
+                ],
+            )
+            for index, outline_range in enumerate(ranges, start=1)
+        ]
+        book_summary: str = " ".join(section.summary for section in sections)
+        summarized.append(SummarizedBook(book.number, book.title, book_summary, sections))
     return summarized
 
 
@@ -352,10 +519,37 @@ def verify_artifacts(source_books: list[SourceBook], data: dict[str, Any]) -> No
         book_summary: object = book.get("summary")
         if not isinstance(book_summary, str) or not has_requested_shape(book_summary, "paragraph"):
             raise RuntimeError(f"{source_book.title} does not have a one-paragraph summary")
-        raw_paragraphs: object = book.get("paragraphs")
-        if not isinstance(raw_paragraphs, list) or len(raw_paragraphs) != len(source_book.paragraphs):
+        raw_sections: object = book.get("sections")
+        if not isinstance(raw_sections, list) or not raw_sections:
+            raise RuntimeError(f"{source_book.title} does not contain sections")
+        sections: list[dict[str, Any]] = cast(list[dict[str, Any]], raw_sections)
+        if [section.get("number") for section in sections] != list(range(1, len(sections) + 1)):
+            raise RuntimeError(f"Section numbering is invalid in {source_book.title}")
+        section_sentences: list[str] = []
+        paragraphs: list[dict[str, Any]] = []
+        expected_start: int = 1
+        for section in sections:
+            section_summary: object = section.get("summary")
+            start: object = section.get("start_paragraph")
+            end: object = section.get("end_paragraph")
+            if not isinstance(section_summary, str) or not has_requested_shape(
+                section_summary, "sentence"
+            ):
+                raise RuntimeError(f"Invalid section sentence in {source_book.title}")
+            if not isinstance(start, int) or not isinstance(end, int) or start != expected_start:
+                raise RuntimeError(f"Invalid section range in {source_book.title}")
+            if end < start:
+                raise RuntimeError(f"Section range size is invalid in {source_book.title}")
+            raw_paragraphs: object = section.get("paragraphs")
+            if not isinstance(raw_paragraphs, list) or len(raw_paragraphs) != end - start + 1:
+                raise RuntimeError(f"Section paragraph count mismatch in {source_book.title}")
+            section_sentences.append(section_summary)
+            paragraphs.extend(cast(list[dict[str, Any]], raw_paragraphs))
+            expected_start = end + 1
+        if book_summary != " ".join(section_sentences):
+            raise RuntimeError(f"Book summary is not the verbatim section join in {source_book.title}")
+        if len(paragraphs) != len(source_book.paragraphs):
             raise RuntimeError(f"Paragraph count mismatch in {source_book.title}")
-        paragraphs: list[dict[str, Any]] = cast(list[dict[str, Any]], raw_paragraphs)
         for source_paragraph, paragraph in zip(source_book.paragraphs, paragraphs, strict=True):
             if paragraph.get("source") != source_paragraph.source:
                 raise RuntimeError(
@@ -380,8 +574,8 @@ def verify_artifacts(source_books: list[SourceBook], data: dict[str, Any]) -> No
     if "<script src=" in html or "<link rel=\"stylesheet\"" in html:
         raise RuntimeError("Standalone HTML unexpectedly depends on an external script or stylesheet")
     print(
-        f"Verified 24 books, {expected_count} sentence/source nodes, "
-        "summary shapes, and standalone HTML."
+        f"Verified 24 books, {sum(len(cast(list[object], book['sections'])) for book in books)} "
+        f"clickable sections, {expected_count} sentence/source nodes, and standalone HTML."
     )
 
 
@@ -436,6 +630,8 @@ def main() -> None:
     summarized: list[SummarizedBook] = summarize_books(books, args.workers)
     final_data: dict[str, Any] = {
         "title": "The Odyssey",
+        "hierarchy_version": 2,
+        "section_paragraph_range": [OUTLINE_MIN_PARAGRAPHS, OUTLINE_MAX_PARAGRAPHS],
         "source_edition": SOURCE_EDITION,
         "source_url": SOURCE_URL,
         "model": MODEL,
